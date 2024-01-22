@@ -1,5 +1,5 @@
 use anyhow::Context;
-use ffmpeg_next::{codec, filter, format, util};
+use ffmpeg_next::{codec, filter, format, util, Rational};
 use std::num::NonZeroU32;
 
 pub mod decode;
@@ -15,15 +15,17 @@ pub fn init_ffmpeg() -> anyhow::Result<()> {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct AudioFormat {
+    time_base: Option<Rational>,
     sample_format: format::Sample,
     channel_layout: util::channel_layout::ChannelLayout,
     sample_rate: u32,
-    pub frame_size: Option<NonZeroU32>,
+    frame_size: Option<NonZeroU32>,
 }
 
 impl Default for AudioFormat {
     fn default() -> Self {
         AudioFormat {
+            time_base: None,
             sample_format: format::Sample::F32(format::sample::Type::Planar),
             channel_layout: util::channel_layout::ChannelLayout::default(2),
             sample_rate: 48000,
@@ -33,6 +35,21 @@ impl Default for AudioFormat {
 }
 
 impl AudioFormat {
+    pub fn from_decoder(decoder: &codec::decoder::Audio) -> AudioFormat {
+        let mut channel_layout = decoder.channel_layout();
+        if channel_layout.is_empty() {
+            channel_layout = util::channel_layout::ChannelLayout::default(1);
+        }
+
+        AudioFormat {
+            time_base: Some(decoder.time_base()),
+            sample_format: decoder.format(),
+            channel_layout,
+            sample_rate: decoder.rate(),
+            frame_size: None,
+        }
+    }
+
     pub fn from_encoder(encoder: &codec::encoder::Audio) -> AudioFormat {
         let frame_size = encoder
             .codec()
@@ -43,26 +60,84 @@ impl AudioFormat {
             })
             .and_then(|_codec| NonZeroU32::new(encoder.frame_size()));
 
+        let mut channel_layout = encoder.channel_layout();
+        if channel_layout.is_empty() {
+            channel_layout = util::channel_layout::ChannelLayout::default(1);
+        }
+
         AudioFormat {
+            time_base: None,
             sample_format: encoder.format(),
-            channel_layout: encoder.channel_layout(),
+            channel_layout,
             sample_rate: encoder.rate(),
             frame_size,
         }
     }
 
-    pub fn set(&self, ctx: &mut filter::Context) {
+    pub fn output_pre_set(&self, ctx: &mut filter::Context) {
         ctx.set_sample_format(self.sample_format);
         ctx.set_channel_layout(self.channel_layout);
         ctx.set_sample_rate(self.sample_rate);
     }
 
-    pub fn format(&self) -> String {
+    pub fn output_post_set<'a, 'b: 'a>(&self, ctx: &'b mut filter::Context<'a>) {
+        if let Some(frame_size) = self.frame_size {
+            ctx.sink().set_frame_size(frame_size.get());
+        }
+    }
+
+    pub fn input_format(&self) -> String {
+        let time_base = if let Some(time_base) = self.time_base {
+            format!("time_base={}:", time_base)
+        } else {
+            "".to_string()
+        };
         format!(
-            "sample_rate={}:sample_fmt={}:channel_layout=0x{:x}",
+            "{}sample_rate={}:sample_fmt={}:channel_layout=0x{:x}",
+            time_base,
             self.sample_rate,
             self.sample_format.name(),
             self.channel_layout.bits()
         )
     }
+}
+
+pub fn audio_filter(
+    input_format: AudioFormat,
+    output_format: AudioFormat,
+) -> anyhow::Result<filter::Graph> {
+    let mut filter = filter::Graph::new();
+
+    let in_args = input_format.input_format();
+
+    filter
+        .add(&filter::find("abuffer").unwrap(), "in", &in_args)
+        .context("Adding input to filter")?;
+    filter
+        .add(&filter::find("abuffersink").unwrap(), "out", "")
+        .context("Adding output to filter")?;
+
+    {
+        let mut out = filter.get("out").unwrap();
+        output_format.output_pre_set(&mut out);
+    }
+
+    filter
+        .output("in", 0)
+        .context("Setting input")?
+        .input("out", 0)
+        .context("Setting output")?
+        .parse("anull")
+        .context("Setting filter spec")?;
+
+    info!("Filter:\n{}", filter.dump());
+
+    filter.validate().context("Validating filter")?;
+
+    {
+        let mut out = filter.get("out").unwrap();
+        output_format.output_post_set(&mut out);
+    }
+
+    Ok(filter)
 }

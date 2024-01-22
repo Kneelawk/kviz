@@ -1,4 +1,4 @@
-use crate::ffmpeg::AudioFormat;
+use crate::ffmpeg::{AudioFormat, audio_filter};
 use crate::recycler::RecycleProducer;
 use anyhow::Context;
 use ffmpeg_next::{codec, filter, format, frame, media, util, Error, Packet, Rational};
@@ -45,7 +45,7 @@ impl DecoderHandle {
             info!("Channel Layout: {:?}", decoder.channel_layout());
             info!("Frame size: {}", decoder.frame_size());
 
-            let filter = filter(&decoder, output_format).context("Creating filter graph")?;
+            let filter = audio_filter(AudioFormat::from_decoder(&decoder), output_format).context("Creating filter graph")?;
 
             let in_time_base = decoder.time_base();
 
@@ -168,62 +168,4 @@ impl DecoderState {
             recycling.blocking_send().context("Sending frame")?;
         }
     }
-}
-
-fn filter(
-    decoder: &codec::decoder::Audio,
-    output_format: AudioFormat,
-) -> anyhow::Result<filter::Graph> {
-    let mut filter = filter::Graph::new();
-
-    let mut channel_layout = decoder.channel_layout();
-    if channel_layout.is_empty() {
-        channel_layout = util::channel_layout::ChannelLayout::default(1);
-    }
-
-    let in_args = format!(
-        "time_base={}:sample_rate={}:sample_fmt={}:channel_layout=0x{:x}",
-        decoder.time_base(),
-        decoder.rate(),
-        decoder.format().name(),
-        channel_layout.bits()
-    );
-
-    info!("In args: {}", &in_args);
-    info!("Out format: {:?}", output_format);
-
-    filter
-        .add(&filter::find("abuffer").unwrap(), "in", &in_args)
-        .context("Adding input to filter")?;
-    filter
-        .add(&filter::find("abuffersink").unwrap(), "out", "")
-        .context("Adding output to filter")?;
-
-    {
-        let mut out = filter.get("out").unwrap();
-
-        output_format.set(&mut out);
-    }
-
-    filter
-        .output("in", 0)
-        .context("Setting input")?
-        .input("out", 0)
-        .context("Setting output")?
-        .parse("anull")
-        .context("Setting filter spec")?;
-
-    info!("Filter:\n{}", filter.dump());
-
-    filter.validate().context("Validating filter")?;
-
-    if let Some(frame_size) = output_format.frame_size {
-        filter
-            .get("out")
-            .unwrap()
-            .sink()
-            .set_frame_size(frame_size.get());
-    }
-
-    Ok(filter)
 }
