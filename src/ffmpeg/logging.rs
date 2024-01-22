@@ -1,4 +1,3 @@
-use anyhow::Context;
 use ffmpeg_next::ffi::{AVClass, __va_list_tag};
 use lazy_static::lazy_static;
 use std::borrow::Cow;
@@ -11,12 +10,8 @@ lazy_static! {
     static ref BUILDING_STR: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 }
 
-pub fn init_ffmpeg() -> anyhow::Result<()> {
-    ffmpeg_next::init().context("Initializing ffmpeg_next")?;
-
+pub fn setup_logging() {
     unsafe { ffmpeg_next::ffi::av_log_set_callback(Some(log_callback)) };
-
-    Ok(())
 }
 
 pub extern "C" fn log_callback(
