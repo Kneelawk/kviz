@@ -40,7 +40,7 @@ impl AudioFormat {
     pub fn from_decoder(decoder: &codec::decoder::Audio) -> AudioFormat {
         let mut channel_layout = decoder.channel_layout();
         if channel_layout.is_empty() {
-            channel_layout = util::channel_layout::ChannelLayout::default(1);
+            channel_layout = util::channel_layout::ChannelLayout::default(2);
         }
 
         AudioFormat {
