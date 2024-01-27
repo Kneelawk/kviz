@@ -23,9 +23,7 @@ pub struct EncoderState {
     audio_encoder: encoder::Audio,
     video_encoder: encoder::Video,
     in_audio_tb: Rational,
-    out_audio_tb: Rational,
     in_video_tb: Rational,
-    out_video_tb: Rational,
     audio_filtered: frame::Audio,
     packet: Packet,
 }
@@ -37,7 +35,7 @@ impl EncoderState {
 
             let global_header = octx.format().flags().contains(format::Flags::GLOBAL_HEADER);
 
-            let (video_encoder, vidx, out_video_tb) = {
+            let (video_encoder, vidx) = {
                 let mut vost = octx
                     .add_stream(encoder::find(codec::Id::VP9))
                     .context("Adding video stream")?;
@@ -69,7 +67,7 @@ impl EncoderState {
 
                 vost.set_parameters(&video_encoder);
 
-                (video_encoder, vost.index(), vost.time_base())
+                (video_encoder, vost.index())
             };
 
             let output_audio_format = AudioFormat {
@@ -80,7 +78,7 @@ impl EncoderState {
                 frame_size: NonZeroU32::new(960),
             };
 
-            let (audio_encoder, aidx, out_audio_tb) = {
+            let (audio_encoder, aidx) = {
                 let mut aost = octx
                     .add_stream(encoder::find(codec::Id::OPUS))
                     .context("Adding audio stream")?;
@@ -105,7 +103,7 @@ impl EncoderState {
                     .context("Opening audio encoder")?;
                 aost.set_parameters(&audio_encoder);
 
-                (audio_encoder, aost.index(), aost.time_base())
+                (audio_encoder, aost.index())
             };
 
             format::context::output::dump(&octx, 0, Some(&path.to_string_lossy()));
@@ -121,9 +119,7 @@ impl EncoderState {
                 audio_encoder,
                 video_encoder,
                 in_audio_tb: Rational::new(1, 48000),
-                out_audio_tb,
                 in_video_tb: Rational::new(1, 24),
-                out_video_tb,
                 audio_filtered: frame::Audio::empty(),
                 packet: Packet::empty(),
             })
@@ -156,7 +152,6 @@ impl EncoderState {
         while let Some(mut frame) = consumer.recv_data_blocking() {
             match frame.deref() {
                 EncoderFrame::Audio(audio) => {
-                    info!("Encoding frame: {:?}", audio);
                     self.send_frame_to_audio_filter(audio)?;
                     self.receive_and_process_filtered_frames()
                         .context("Processing filtered audio")?;

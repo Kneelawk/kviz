@@ -6,7 +6,6 @@ use crate::ffmpeg::AudioFormat;
 use anyhow::Context;
 use clap::Parser;
 use ffmpeg_next::{format, frame};
-use std::ops::Deref;
 use std::path::PathBuf;
 
 mod ffmpeg;
@@ -33,6 +32,8 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Inputting from: {:?}", &args.input);
     info!("Outputting to: {:?}", &args.output);
+
+    let blue = [0xFFu8, 0x0, 0x0, 0xFF].repeat(1920 * 1080);
 
     let (audio_producer, mut audio_consumer) = recycle::simple::recycler(
         (0..AUDIO_FRAMES_IN_FLIGHT)
@@ -72,18 +73,25 @@ async fn main() -> anyhow::Result<()> {
         let handle = encoder_state.spawn(video_consumer);
 
         while let Some(mut audio) = audio_consumer.recv_data().await {
-            recv_recycling!(video_producer, video_holder, EncoderFrame::Audio(audio_out));
+            {
+                recv_recycling!(video_producer, video_holder, EncoderFrame::Audio(audio_out));
 
-            audio.clone_into(audio_out);
+                audio.clone_into(audio_out);
 
-            info!("Decoded frame: {:?}", audio.deref());
-            info!("Copied frame: {:?}", audio_out);
+                video_holder
+                    .send()
+                    .await
+                    .context("Sending frame to encoder")?;
+            }
+            {
+                recv_recycling!(video_producer, video_holder, EncoderFrame::Video(video_out));
 
+                video_out.set_pts(audio.pts().map(|pts| pts * 24 / 48000));
+                video_out.data_mut(0).copy_from_slice(&blue);
+
+                video_holder.send().await.ok();
+            }
             audio.send().await.ok();
-            video_holder
-                .send()
-                .await
-                .context("Sending frame to encoder")?;
         }
 
         info!("Closing...");
