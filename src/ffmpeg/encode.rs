@@ -50,7 +50,7 @@ impl EncoderState {
                 video_encoder.set_frame_rate(Some((1, 24)));
                 video_encoder.set_time_base((1, 24));
                 video_encoder.set_format(format::Pixel::YUV420P);
-                video_encoder.set_bit_rate(0);
+                video_encoder.set_bit_rate(500000);
 
                 vost.set_time_base((1, 24));
 
@@ -59,7 +59,12 @@ impl EncoderState {
                 }
 
                 let mut dict = Dictionary::new();
-                dict.set("crf", "30");
+                dict.set("threads", "8");
+                dict.set("tile-columns", "4");
+                dict.set("tile-rows", "2");
+                dict.set("frame-parallel", "1");
+                dict.set("quality", "realtime");
+                dict.set("speed", "6");
 
                 let video_encoder = video_encoder
                     .open_as_with(encoder::find(codec::Id::VP9), dict)

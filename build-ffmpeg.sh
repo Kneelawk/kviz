@@ -36,7 +36,7 @@ curl -L 'https://chromium.googlesource.com/webm/libvpx/+archive/v1.14.0.tar.gz' 
 mkdir libvpx
 tar -xf libvpx.tar.gz -C libvpx/
 pushd libvpx
-./configure --prefix="$FFMPEG_DIR" --disable-shared --enable-pic --disable-examples --disable-tools --disable-docs --disable-unit-tests --enable-pic
+./configure --prefix="$FFMPEG_DIR" --disable-shared --enable-pic --disable-examples --disable-tools --disable-docs --disable-unit-tests
 make -j8
 make install
 popd
