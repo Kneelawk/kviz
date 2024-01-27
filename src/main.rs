@@ -42,6 +42,10 @@ async fn main() -> anyhow::Result<()> {
     let mut fft_input = fft.make_input_vec();
     let mut fft_output = fft.make_output_vec();
     let mut fft_scratch = fft.make_scratch_vec();
+    let scale_factor = (audio_format.frame_size.unwrap().get() as f32).sqrt();
+
+    let mut history_1 = vec![0f32; fft_output.len() * 1920];
+    let mut history_2 = vec![0f32; fft_output.len() * 1920];
 
     let (audio_producer, mut audio_consumer) = recycle::simple::recycler(
         (0..AUDIO_FRAMES_IN_FLIGHT)
@@ -98,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
             }
             {
                 let plane = audio.plane::<f32>(0);
+
                 if plane.len() == fft_input.len() {
                     fft_input.copy_from_slice(plane);
                 } else {
@@ -107,20 +112,44 @@ async fn main() -> anyhow::Result<()> {
                 fft.process_with_scratch(&mut fft_input, &mut fft_output, &mut fft_scratch)
                     .context("Performing FFT")?;
 
+                history_1.copy_within(fft_output.len()..(fft_output.len() * 1920), 0);
+                for (index, cmplx) in fft_output.iter().enumerate() {
+                    history_1[(fft_output.len() * 1919) + index] = (cmplx.re / scale_factor).sqrt();
+                }
+
+                let plane = audio.plane::<f32>(1);
+                if plane.len() == fft_input.len() {
+                    fft_input.copy_from_slice(plane);
+                } else {
+                    fft_input.fill(0.0);
+                    fft_input[0..plane.len()].copy_from_slice(plane);
+                }
+                fft.process_with_scratch(&mut fft_input, &mut fft_output, &mut fft_scratch)
+                    .context("Performing FFT")?;
+
+                history_2.copy_within(fft_output.len()..(fft_output.len() * 1920), 0);
+                for (index, cmplx) in fft_output.iter().enumerate() {
+                    history_2[(fft_output.len() * 1919) + index] = (cmplx.re / scale_factor).sqrt();
+                }
+
                 recv_recycling!(video_producer, video_holder, EncoderFrame::Video(video_out));
 
                 let video_frame = video_out.data_mut(0);
 
-                for i in 0usize..1920 {
-                    let index = i * fft_output.len() / 1920;
-                    let out = fft_output[index].re;
+                for y in 0usize..1080 {
+                    let buf_y = (1080 - y - 1) * fft_output.len() / 1080;
 
-                    let color = (out * 255.0) as u8;
+                    for x in 0usize..1920 {
+                        let pixel = (y * 1920 + x) * 4;
+                        let index = x * fft_output.len() + buf_y;
+                        let out_1 = history_1[index];
+                        let out_2 = history_2[index];
+                        let color_1 = (out_1 * 255.0) as u8;
+                        let color_2 = (out_2 * 255.0) as u8;
 
-                    for y in 0usize..1080 {
-                        let pixel = (y * 1920 + i) * 4;
                         video_frame[pixel] = 0xFF;
-                        video_frame[pixel + 3] = color;
+                        video_frame[pixel + 2] = color_2;
+                        video_frame[pixel + 3] = color_1;
                     }
                 }
 
