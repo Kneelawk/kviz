@@ -1,22 +1,27 @@
 #[macro_use]
 extern crate tracing;
 
+use crate::ffmpeg::encode::{EncoderFrame, EncoderState};
 use crate::ffmpeg::AudioFormat;
 use anyhow::Context;
 use clap::Parser;
-use ffmpeg_next::frame;
+use ffmpeg_next::{format, frame};
 use std::ops::Deref;
 use std::path::PathBuf;
 
 mod ffmpeg;
-mod recycler;
+mod recycle;
 
 const AUDIO_FRAMES_IN_FLIGHT: usize = 8;
+const VIDEO_FRAMES_IN_FLIGHT: usize = 8;
 
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(short, long)]
     input: PathBuf,
+
+    #[arg(short, long)]
+    output: PathBuf,
 }
 
 #[tokio::main]
@@ -26,28 +31,68 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    info!("Inputting from {:?}", &args.input);
+    info!("Inputting from: {:?}", &args.input);
+    info!("Outputting to: {:?}", &args.output);
 
-    let (producer, mut consumer) = recycler::recycler(
+    let (audio_producer, mut audio_consumer) = recycle::simple::recycler(
         (0..AUDIO_FRAMES_IN_FLIGHT)
             .map(|_| frame::Audio::empty())
             .collect(),
     )
     .await;
 
-    let handle = ffmpeg::decode::DecoderHandle::spawn(args.input, AudioFormat::default(), producer)
-        .await
-        .context("Spawning decoder handle")?;
+    let decoder_handle =
+        ffmpeg::decode::DecoderHandle::spawn(args.input, AudioFormat::default(), audio_producer)
+            .await
+            .context("Spawning decoder handle")?;
 
-    while let Some(mut audio) = consumer.recv_data().await {
-        info!("Frame: {:?}", audio.deref());
+    let encoder_handle = {
+        let encoder_state = EncoderState::new(args.output, AudioFormat::default())
+            .await
+            .context("Creating encoder")?;
 
-        audio.send().await.context("Sending recycling")?;
-    }
+        let audio_format = AudioFormat::default();
 
-    info!("Closing...");
+        let (mut video_producer, video_consumer) = recycle::r#enum::enum_recycler(
+            (0..AUDIO_FRAMES_IN_FLIGHT)
+                .map(|_| {
+                    EncoderFrame::Audio(frame::Audio::new(
+                        audio_format.sample_format,
+                        audio_format.frame_size.unwrap().get() as usize,
+                        audio_format.channel_layout,
+                    ))
+                })
+                .chain((0..VIDEO_FRAMES_IN_FLIGHT).map(|_| {
+                    EncoderFrame::Video(frame::Video::new(format::Pixel::ARGB, 1920, 1080))
+                }))
+                .collect(),
+        )
+        .await;
 
-    handle.join().await.context("Decoder handle")?;
+        let handle = encoder_state.spawn(video_consumer);
+
+        while let Some(mut audio) = audio_consumer.recv_data().await {
+            recv_recycling!(video_producer, video_holder, EncoderFrame::Audio(audio_out));
+
+            audio.clone_into(audio_out);
+
+            info!("Decoded frame: {:?}", audio.deref());
+            info!("Copied frame: {:?}", audio_out);
+
+            audio.send().await.ok();
+            video_holder
+                .send()
+                .await
+                .context("Sending frame to encoder")?;
+        }
+
+        info!("Closing...");
+
+        handle
+    };
+
+    encoder_handle.join().await.context("Encoder handle")?;
+    decoder_handle.join().await.context("Decoder handle")?;
 
     info!("Done.");
 

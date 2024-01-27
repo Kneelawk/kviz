@@ -1,9 +1,11 @@
 use anyhow::Context;
-use ffmpeg_next::{codec, filter, format, util, Rational};
+use ffmpeg_next::{codec, filter, format, frame, util, Error, Rational};
 use std::num::NonZeroU32;
 
 pub mod decode;
+pub mod encode;
 mod logging;
+pub mod extra;
 
 pub fn init_ffmpeg() -> anyhow::Result<()> {
     ffmpeg_next::init().context("Initializing ffmpeg_next")?;
@@ -15,21 +17,21 @@ pub fn init_ffmpeg() -> anyhow::Result<()> {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct AudioFormat {
-    time_base: Option<Rational>,
-    sample_format: format::Sample,
-    channel_layout: util::channel_layout::ChannelLayout,
-    sample_rate: u32,
-    frame_size: Option<NonZeroU32>,
+    pub time_base: Option<Rational>,
+    pub sample_format: format::Sample,
+    pub channel_layout: util::channel_layout::ChannelLayout,
+    pub sample_rate: u32,
+    pub frame_size: Option<NonZeroU32>,
 }
 
 impl Default for AudioFormat {
     fn default() -> Self {
         AudioFormat {
-            time_base: None,
+            time_base: Some(Rational::new(1, 48000)),
             sample_format: format::Sample::F32(format::sample::Type::Planar),
             channel_layout: util::channel_layout::ChannelLayout::default(2),
             sample_rate: 48000,
-            frame_size: None,
+            frame_size: NonZeroU32::new(2000),
         }
     }
 }
@@ -74,6 +76,16 @@ impl AudioFormat {
         }
     }
 
+    pub fn from_frame(frame: &frame::Audio) -> AudioFormat {
+        AudioFormat {
+            time_base: None,
+            sample_format: frame.format(),
+            channel_layout: frame.channel_layout(),
+            sample_rate: frame.rate(),
+            frame_size: None,
+        }
+    }
+
     pub fn output_pre_set(&self, ctx: &mut filter::Context) {
         ctx.set_sample_format(self.sample_format);
         ctx.set_channel_layout(self.channel_layout);
@@ -99,6 +111,12 @@ impl AudioFormat {
             self.sample_format.name(),
             self.channel_layout.bits()
         )
+    }
+}
+
+impl From<AudioFormat> for (format::Sample, util::channel_layout::ChannelLayout, u32) {
+    fn from(value: AudioFormat) -> Self {
+        (value.sample_format, value.channel_layout, value.sample_rate)
     }
 }
 
@@ -140,4 +158,21 @@ pub fn audio_filter(
     }
 
     Ok(filter)
+}
+
+pub trait FfmpegResult {
+    fn recv_continue(self) -> Result<bool, Error>;
+}
+
+impl FfmpegResult for Result<(), Error> {
+    fn recv_continue(self) -> Result<bool, Error> {
+        match self {
+            Err(Error::Other {
+                errno: util::error::EAGAIN,
+            }) => Ok(false),
+            Err(Error::Eof) => Ok(false),
+            Err(err) => Err(err),
+            Ok(_) => Ok(true),
+        }
+    }
 }
