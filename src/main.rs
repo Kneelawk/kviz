@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
 
                 history_1.copy_within(fft_output.len()..(fft_output.len() * 1920), 0);
                 for (index, cmplx) in fft_output.iter().enumerate() {
-                    history_1[(fft_output.len() * 1919) + index] = (cmplx.re / scale_factor).sqrt();
+                    history_1[(fft_output.len() * 1919) + index] = (cmplx.re / scale_factor + 1.0).ln();
                 }
 
                 let plane = audio.plane::<f32>(1);
@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
 
                 history_2.copy_within(fft_output.len()..(fft_output.len() * 1920), 0);
                 for (index, cmplx) in fft_output.iter().enumerate() {
-                    history_2[(fft_output.len() * 1919) + index] = (cmplx.re / scale_factor).sqrt();
+                    history_2[(fft_output.len() * 1919) + index] = (cmplx.re / scale_factor + 1.0).ln();
                 }
 
                 recv_recycling!(video_producer, video_holder, EncoderFrame::Video(video_out));
