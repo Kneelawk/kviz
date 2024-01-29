@@ -1,179 +1,92 @@
 #[macro_use]
 extern crate tracing;
 
-use crate::ffmpeg::encode::{EncoderFrame, EncoderState};
-use crate::ffmpeg::AudioFormat;
-use anyhow::Context;
+use crate::args::Commands;
+use crate::project::Project;
+use anyhow::{bail, Context};
+use args::Cli;
 use clap::Parser;
-use ffmpeg_next::{format, frame};
-use realfft::RealFftPlanner;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+mod args;
 mod ffmpeg;
+mod project;
 mod recycle;
-
-const AUDIO_FRAMES_IN_FLIGHT: usize = 8;
-const VIDEO_FRAMES_IN_FLIGHT: usize = 8;
-
-#[derive(Debug, Parser)]
-struct Args {
-    #[arg(short, long)]
-    input: PathBuf,
-
-    #[arg(short, long)]
-    output: PathBuf,
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
     ffmpeg::init_ffmpeg()?;
 
-    let args = Args::parse();
+    let args = Cli::parse();
 
-    info!("Inputting from: {:?}", &args.input);
-    info!("Outputting to: {:?}", &args.output);
+    match args.subcommand {
+        Commands::Run(args) => {
+            let project: Project = args.into();
 
-    let audio_format = AudioFormat::default();
-
-    let mut fft_planner = RealFftPlanner::<f32>::new();
-    let fft = fft_planner.plan_fft_forward(audio_format.frame_size.unwrap().get() as usize);
-    let mut fft_input = fft.make_input_vec();
-    let mut fft_output = fft.make_output_vec();
-    let mut fft_scratch = fft.make_scratch_vec();
-    let scale_factor = (audio_format.frame_size.unwrap().get() as f32).sqrt();
-
-    let mut history_1 = vec![0f32; fft_output.len() * 1920];
-    let mut history_2 = vec![0f32; fft_output.len() * 1920];
-
-    let (audio_producer, mut audio_consumer) = recycle::simple::recycler(
-        (0..AUDIO_FRAMES_IN_FLIGHT)
-            .map(|_| frame::Audio::empty())
-            .collect(),
-    )
-    .await;
-
-    let decoder_handle =
-        ffmpeg::decode::DecoderHandle::spawn(args.input, audio_format, audio_producer)
-            .await
-            .context("Spawning decoder handle")?;
-
-    let encoder_handle = {
-        let encoder_state = EncoderState::new(args.output, audio_format)
-            .await
-            .context("Creating encoder")?;
-
-        let (mut video_producer, video_consumer) = recycle::r#enum::enum_recycler(
-            (0..AUDIO_FRAMES_IN_FLIGHT)
-                .map(|_| {
-                    EncoderFrame::Audio(frame::Audio::new(
-                        audio_format.sample_format,
-                        audio_format.frame_size.unwrap().get() as usize,
-                        audio_format.channel_layout,
-                    ))
-                })
-                .chain((0..VIDEO_FRAMES_IN_FLIGHT).map(|_| {
-                    EncoderFrame::Video(frame::Video::new(format::Pixel::ARGB, 1920, 1080))
-                }))
-                .collect(),
-        )
-        .await;
-
-        let handle = encoder_state.spawn(video_consumer);
-
-        let mut last_msg = Instant::now();
-        while let Some(mut audio) = audio_consumer.recv_data().await {
-            {
-                recv_recycling!(video_producer, video_holder, EncoderFrame::Audio(audio_out));
-
-                if audio_out.samples() > audio.samples() {
-                    for i in 0..audio_out.planes() {
-                        audio_out.plane_mut(i).fill(0f32);
-                    }
-                }
-
-                audio.clone_into(audio_out);
-
-                video_holder
-                    .send()
-                    .await
-                    .context("Sending frame to encoder")?;
-            }
-            {
-                let plane = audio.plane::<f32>(0);
-
-                if plane.len() == fft_input.len() {
-                    fft_input.copy_from_slice(plane);
-                } else {
-                    fft_input.fill(0.0);
-                    fft_input[0..plane.len()].copy_from_slice(plane);
-                }
-                fft.process_with_scratch(&mut fft_input, &mut fft_output, &mut fft_scratch)
-                    .context("Performing FFT")?;
-
-                history_1.copy_within(fft_output.len()..(fft_output.len() * 1920), 0);
-                for (index, cmplx) in fft_output.iter().enumerate() {
-                    history_1[(fft_output.len() * 1919) + index] = (cmplx.re / scale_factor + 1.0).ln();
-                }
-
-                let plane = audio.plane::<f32>(1);
-                if plane.len() == fft_input.len() {
-                    fft_input.copy_from_slice(plane);
-                } else {
-                    fft_input.fill(0.0);
-                    fft_input[0..plane.len()].copy_from_slice(plane);
-                }
-                fft.process_with_scratch(&mut fft_input, &mut fft_output, &mut fft_scratch)
-                    .context("Performing FFT")?;
-
-                history_2.copy_within(fft_output.len()..(fft_output.len() * 1920), 0);
-                for (index, cmplx) in fft_output.iter().enumerate() {
-                    history_2[(fft_output.len() * 1919) + index] = (cmplx.re / scale_factor + 1.0).ln();
-                }
-
-                recv_recycling!(video_producer, video_holder, EncoderFrame::Video(video_out));
-
-                let video_frame = video_out.data_mut(0);
-
-                for y in 0usize..1080 {
-                    let buf_y = (1080 - y - 1) * fft_output.len() / 1080;
-
-                    for x in 0usize..1920 {
-                        let pixel = (y * 1920 + x) * 4;
-                        let index = x * fft_output.len() + buf_y;
-                        let out_1 = history_1[index];
-                        let out_2 = history_2[index];
-                        let color_1 = (out_1 * 255.0) as u8;
-                        let color_2 = (out_2 * 255.0) as u8;
-
-                        video_frame[pixel] = 0xFF;
-                        video_frame[pixel + 2] = color_2;
-                        video_frame[pixel + 3] = color_1;
-                    }
-                }
-
-                video_out.set_pts(audio.pts().map(|pts| pts * 24 / 48000));
-
-                video_holder.send().await.ok();
-            }
-
-            let now = Instant::now();
-            if now - last_msg > Duration::from_secs(2) {
-                last_msg = now;
-                info!("Secs: {}", audio.pts().unwrap() / 48000)
-            }
-
-            audio.send().await.ok();
+            project.visualize().await.context("Running visualization")?;
         }
+        Commands::CreateProject {
+            project_file,
+            project_args,
+        } => {
+            let project: Project = project_args.into();
 
-        info!("Closing...");
+            let project_bytes =
+                serde_json::to_vec_pretty(&project).context("Serializing project")?;
 
-        handle
-    };
+            let mut open_project_file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&project_file)
+                .await
+                .context("Opening project file")?;
+            open_project_file
+                .write_all(&project_bytes)
+                .await
+                .context("Writing project file")?;
 
-    encoder_handle.join().await.context("Encoder handle")?;
-    decoder_handle.join().await.context("Decoder handle")?;
+            info!("Project file written to {:?}", &project_file);
+        }
+        Commands::RunProject {
+            project_file,
+            input,
+            output,
+        } => {
+            info!("Loading project file from: {:?}", &project_file);
+
+            let mut open_project_file = OpenOptions::new()
+                .read(true)
+                .open(&project_file)
+                .await
+                .context("Opening project file")?;
+            let mut project_str = String::new();
+            open_project_file
+                .read_to_string(&mut project_str)
+                .await
+                .context("Reading project file")?;
+
+            let project_from_file: Project =
+                serde_json::from_str(&project_str).context("Deserializing project")?;
+
+            let project = Project {
+                input: input.or(project_from_file.input),
+                output: output.or(project_from_file.output),
+                ..project_from_file
+            };
+
+            if project.input.is_none() {
+                bail!("Neither project nor arguments provide an input file");
+            }
+
+            if project.output.is_none() {
+                bail!("Neither project nor arguemnts provide an output file");
+            }
+
+            project.visualize().await.context("Running visualization")?;
+        }
+    }
 
     info!("Done.");
 
