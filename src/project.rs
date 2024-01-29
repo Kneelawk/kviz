@@ -6,6 +6,8 @@ use crate::recycle::r#enum::enum_recycler;
 use crate::recycle::simple::recycler;
 use crate::util::MultiSlice;
 use crate::visualizer::bars::BarsVisualizerInput;
+use crate::visualizer::cotton::CottonVisualizerInput;
+use crate::visualizer::credits::CreditsVisualizerInput;
 use crate::visualizer::{Visualizer, VisualizerInput, VisualizerInputExtra};
 use anyhow::{bail, Context};
 use ffmpeg_next::{format, frame};
@@ -36,6 +38,8 @@ pub struct Program {
 #[serde(tag = "type")]
 pub enum VisualizerEnum {
     Bars(BarsVisualizerInput),
+    Cotton(CottonVisualizerInput),
+    Credits(CreditsVisualizerInput),
 }
 
 impl VisualizerEnum {
@@ -45,6 +49,8 @@ impl VisualizerEnum {
     ) -> anyhow::Result<Box<dyn Visualizer>> {
         match self {
             VisualizerEnum::Bars(input) => input.new_visualizer(extra).await,
+            VisualizerEnum::Cotton(input) => input.new_visualizer(extra).await,
+            VisualizerEnum::Credits(input) => input.new_visualizer(extra).await,
         }
     }
 }

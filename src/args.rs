@@ -1,5 +1,7 @@
 use crate::project::{Program, Project, VisualizerEnum};
 use crate::visualizer::bars::BarsVisualizerInput;
+use crate::visualizer::cotton::CottonVisualizerInput;
+use crate::visualizer::credits::CreditsVisualizerInput;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -89,6 +91,16 @@ pub struct ProgramArgs {
 pub enum VisualizerArgs {
     /// Runs the Bars visualizer, drawing flashing vertical bars on the screen for the different frequencies.
     Bars,
+
+    /// Runs the Cotton visualizer, stuff drifting from the top of the screen like falling cotton.
+    Cotton {
+        /// The seed for the visualizer.
+        #[arg(long)]
+        seed: Option<u64>,
+    },
+
+    /// Runs the Credits visualizer, centered fft graph coming from the top of the screen.
+    Credits,
 }
 
 impl From<ProjectArgs> for Project {
@@ -125,6 +137,10 @@ impl From<VisualizerArgs> for VisualizerEnum {
     fn from(value: VisualizerArgs) -> Self {
         match value {
             VisualizerArgs::Bars => VisualizerEnum::Bars(BarsVisualizerInput {}),
+            VisualizerArgs::Cotton { seed } => {
+                VisualizerEnum::Cotton(CottonVisualizerInput { seed })
+            }
+            VisualizerArgs::Credits => VisualizerEnum::Credits(CreditsVisualizerInput {}),
         }
     }
 }

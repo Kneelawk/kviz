@@ -6,6 +6,8 @@ use futures::future::LocalBoxFuture;
 use num_complex::Complex32;
 
 pub mod bars;
+pub mod cotton;
+pub mod credits;
 
 #[derive(Debug, Clone)]
 pub struct VisualizerInputExtra {
