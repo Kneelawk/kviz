@@ -1,4 +1,5 @@
-use crate::project::{Program, Project};
+use crate::project::{Program, Project, VisualizerEnum};
+use crate::visualizer::bars::BarsVisualizerInput;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -78,6 +79,16 @@ pub struct ProgramArgs {
     /// The height of the output video.
     #[arg(long, default_value = "1080")]
     pub height: u32,
+
+    /// The visualizer to use in this program.
+    #[command(subcommand)]
+    pub visualizer: VisualizerArgs,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum VisualizerArgs {
+    /// Runs the Bars visualizer, drawing flashing vertical bars on the screen for the different frequencies.
+    Bars,
 }
 
 impl From<ProjectArgs> for Project {
@@ -105,6 +116,15 @@ impl From<ProgramArgs> for Program {
         Program {
             width: value.width,
             height: value.height,
+            visualizer: value.visualizer.into(),
+        }
+    }
+}
+
+impl From<VisualizerArgs> for VisualizerEnum {
+    fn from(value: VisualizerArgs) -> Self {
+        match value {
+            VisualizerArgs::Bars => VisualizerEnum::Bars(BarsVisualizerInput {}),
         }
     }
 }

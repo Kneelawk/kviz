@@ -4,6 +4,9 @@ use crate::ffmpeg::AudioFormat;
 use crate::recv_recycling;
 use crate::recycle::r#enum::enum_recycler;
 use crate::recycle::simple::recycler;
+use crate::util::MultiSlice;
+use crate::visualizer::bars::BarsVisualizerInput;
+use crate::visualizer::{Visualizer, VisualizerInput, VisualizerInputExtra};
 use anyhow::{bail, Context};
 use ffmpeg_next::{format, frame};
 use realfft::RealFftPlanner;
@@ -26,6 +29,24 @@ pub struct Project {
 pub struct Program {
     pub width: u32,
     pub height: u32,
+    pub visualizer: VisualizerEnum,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum VisualizerEnum {
+    Bars(BarsVisualizerInput),
+}
+
+impl VisualizerEnum {
+    async fn new_visualizer(
+        &self,
+        extra: VisualizerInputExtra,
+    ) -> anyhow::Result<Box<dyn Visualizer>> {
+        match self {
+            VisualizerEnum::Bars(input) => input.new_visualizer(extra).await,
+        }
+    }
 }
 
 impl Project {
@@ -49,13 +70,25 @@ impl Project {
         let mut fft_planner = RealFftPlanner::<f32>::new();
         let fft = fft_planner.plan_fft_forward(audio_format.frame_size.unwrap().get() as usize);
         let mut fft_input = fft.make_input_vec();
-        let mut fft_output: Vec<_> = (0..audio_format.channel_layout.channels())
-            .map(|_| fft.make_output_vec())
-            .collect();
+        let mut fft_output = MultiSlice::new(
+            (0..audio_format.channel_layout.channels())
+                .map(|_| fft.make_output_vec())
+                .collect(),
+        );
         let fft_output_len = fft_output[0].len();
         let mut fft_scratch = fft.make_scratch_vec();
 
         let (decoder_handle, encoder_handle) = {
+            let mut visualizer = program
+                .visualizer
+                .new_visualizer(VisualizerInputExtra {
+                    width: program.width,
+                    height: program.height,
+                    fft_length: fft_output_len,
+                })
+                .await
+                .context("Creating visualizer")?;
+
             let (audio_producer, mut audio_consumer) = recycler(
                 (0..AUDIO_FRAMES_IN_FLIGHT)
                     .map(|_| frame::Audio::empty())
@@ -141,25 +174,10 @@ impl Project {
 
                     let video_frame = video_out.data_mut(0);
 
-                    // TODO: replace this with custom program
-                    // reference implementation
-                    for x in 0usize..program.width as usize {
-                        let buf_index = x * fft_output_len / (program.width as usize);
-
-                        let pixel_1 = (fft_output[0][buf_index].norm() * 2.0) as u8;
-                        let pixel_2 = fft_output
-                            .get(1)
-                            .map(|out| (out[buf_index].norm() * 2.0) as u8);
-
-                        for y in 0usize..program.height as usize {
-                            let pixel = (y * (program.width as usize) + x) * 4;
-                            video_frame[pixel] = 0xFF; // alpha
-                            video_frame[pixel + 3] = pixel_1; // blue
-                            if let Some(pixel_2) = pixel_2 {
-                                video_frame[pixel + 2] = pixel_2; // green
-                            }
-                        }
-                    }
+                    visualizer
+                        .render_frame(&audio_in, &fft_output, video_frame)
+                        .await
+                        .context("Rendering frame")?;
 
                     video_out.set_pts(audio_in.pts().map(|pts| pts * 24 / 48000));
 

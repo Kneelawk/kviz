@@ -13,6 +13,8 @@ mod args;
 mod ffmpeg;
 mod project;
 mod recycle;
+mod visualizer;
+mod util;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
