@@ -38,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
 
             let mut open_project_file = OpenOptions::new()
                 .write(true)
+                .create(true)
                 .truncate(true)
                 .open(&project_file)
                 .await

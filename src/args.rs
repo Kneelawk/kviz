@@ -70,7 +70,15 @@ pub struct ProjectOptionArgs {
 }
 
 #[derive(Debug, Clone, Args)]
-pub struct ProgramArgs {}
+pub struct ProgramArgs {
+    /// The width of the output video.
+    #[arg(long, default_value = "1920")]
+    pub width: u32,
+
+    /// The height of the output video.
+    #[arg(long, default_value = "1080")]
+    pub height: u32,
+}
 
 impl From<ProjectArgs> for Project {
     fn from(value: ProjectArgs) -> Self {
@@ -93,7 +101,10 @@ impl From<ProjectOptionArgs> for Project {
 }
 
 impl From<ProgramArgs> for Program {
-    fn from(_value: ProgramArgs) -> Self {
-        Program {}
+    fn from(value: ProgramArgs) -> Self {
+        Program {
+            width: value.width,
+            height: value.height,
+        }
     }
 }

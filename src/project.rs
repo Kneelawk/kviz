@@ -1,5 +1,5 @@
 use crate::ffmpeg::decode::DecoderHandle;
-use crate::ffmpeg::encode::{EncoderFrame, EncoderState};
+use crate::ffmpeg::encode::{EncoderArgs, EncoderFrame, EncoderState};
 use crate::ffmpeg::AudioFormat;
 use crate::recv_recycling;
 use crate::recycle::r#enum::enum_recycler;
@@ -23,7 +23,10 @@ pub struct Project {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Program {}
+pub struct Program {
+    pub width: u32,
+    pub height: u32,
+}
 
 impl Project {
     pub async fn visualize(&self) -> anyhow::Result<()> {
@@ -33,6 +36,8 @@ impl Project {
         let Some(output_file) = self.output.as_ref() else {
             bail!(VisualizeError::NoOutputFile)
         };
+
+        let program = &self.program;
 
         info!("Starting visualization...");
 
@@ -63,9 +68,16 @@ impl Project {
                     .await
                     .context("Spawning decoder handle")?;
 
-            let encoder_state = EncoderState::new(output_file.clone(), audio_format)
-                .await
-                .context("Creating encoder")?;
+            let encoder_state = EncoderState::new(
+                output_file.clone(),
+                EncoderArgs {
+                    in_audio_format: audio_format,
+                    width: program.width,
+                    height: program.height,
+                },
+            )
+            .await
+            .context("Creating encoder")?;
 
             let (mut video_producer, video_consumer) = enum_recycler(
                 (0..AUDIO_FRAMES_IN_FLIGHT)
@@ -77,7 +89,11 @@ impl Project {
                         ))
                     })
                     .chain((0..VIDEO_FRAMES_IN_FLIGHT).map(|_| {
-                        EncoderFrame::Video(frame::Video::new(format::Pixel::ARGB, 1920, 1080))
+                        EncoderFrame::Video(frame::Video::new(
+                            format::Pixel::ARGB,
+                            program.width,
+                            program.height,
+                        ))
                     }))
                     .collect(),
             )
@@ -127,14 +143,16 @@ impl Project {
 
                     // TODO: replace this with custom program
                     // reference implementation
-                    for x in 0usize..1920 {
-                        let buf_index = x * fft_output_len / 1920;
+                    for x in 0usize..program.width as usize {
+                        let buf_index = x * fft_output_len / (program.width as usize);
 
                         let pixel_1 = (fft_output[0][buf_index].norm() * 2.0) as u8;
-                        let pixel_2 = fft_output.get(1).map(|out| (out[buf_index].norm() * 2.0) as u8);
+                        let pixel_2 = fft_output
+                            .get(1)
+                            .map(|out| (out[buf_index].norm() * 2.0) as u8);
 
-                        for y in 0usize..1080 {
-                            let pixel = (y * 1920 + x) * 4;
+                        for y in 0usize..program.height as usize {
+                            let pixel = (y * (program.width as usize) + x) * 4;
                             video_frame[pixel] = 0xFF; // alpha
                             video_frame[pixel + 3] = pixel_1; // blue
                             if let Some(pixel_2) = pixel_2 {

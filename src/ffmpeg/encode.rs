@@ -9,6 +9,13 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
 
+#[derive(Debug, Clone)]
+pub struct EncoderArgs {
+    pub in_audio_format: AudioFormat,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(KeyableEnum)]
 pub enum EncoderFrame {
     Audio(frame::Audio),
@@ -16,6 +23,7 @@ pub enum EncoderFrame {
 }
 
 pub struct EncoderState {
+    args: EncoderArgs,
     octx: format::context::Output,
     aidx: usize,
     vidx: usize,
@@ -29,7 +37,7 @@ pub struct EncoderState {
 }
 
 impl EncoderState {
-    pub async fn new(path: PathBuf, audio_format: AudioFormat) -> anyhow::Result<EncoderState> {
+    pub async fn new(path: PathBuf, args: EncoderArgs) -> anyhow::Result<EncoderState> {
         tokio::task::spawn_blocking(move || {
             let mut octx = format::output(&path).context("Opening output file")?;
 
@@ -45,8 +53,8 @@ impl EncoderState {
                     .video()
                     .context("Getting video encoder")?;
 
-                video_encoder.set_width(1920);
-                video_encoder.set_height(1080);
+                video_encoder.set_width(args.width);
+                video_encoder.set_height(args.height);
                 video_encoder.set_frame_rate(Some((1, 24)));
                 video_encoder.set_time_base((1, 24));
                 video_encoder.set_format(format::Pixel::YUV420P);
@@ -78,7 +86,7 @@ impl EncoderState {
             let output_audio_format = AudioFormat {
                 time_base: Some(Rational::new(1, 48000)),
                 sample_format: format::Sample::F32(format::sample::Type::Packed),
-                channel_layout: audio_format.channel_layout,
+                channel_layout: args.in_audio_format.channel_layout,
                 sample_rate: 48000,
                 frame_size: NonZeroU32::new(960),
             };
@@ -113,10 +121,11 @@ impl EncoderState {
 
             format::context::output::dump(&octx, 0, Some(&path.to_string_lossy()));
 
-            let audio_filter = audio_filter(audio_format, output_audio_format)
+            let audio_filter = audio_filter(args.in_audio_format, output_audio_format)
                 .context("Creating encoder audio filter")?;
 
             Ok::<_, anyhow::Error>(EncoderState {
+                args,
                 octx,
                 aidx,
                 vidx,
@@ -147,9 +156,12 @@ impl EncoderState {
 
     fn do_encode(mut self, mut consumer: EnumRecycleConsumer<EncoderFrame>) -> anyhow::Result<()> {
         // The converter cannot be sent between threads, so it needs to be constructed here
-        let mut video_converter =
-            software::converter((1920, 1080), format::Pixel::ARGB, format::Pixel::YUV420P)
-                .context("Creating video converter")?;
+        let mut video_converter = software::converter(
+            (self.args.width, self.args.height),
+            format::Pixel::ARGB,
+            format::Pixel::YUV420P,
+        )
+        .context("Creating video converter")?;
         let mut video_converted = frame::Video::empty();
 
         self.octx.write_header().context("Writing header")?;
